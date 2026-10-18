@@ -422,7 +422,7 @@ async function listFiles(dir) {
 }
 
 function fileRank(path) {
-  const order = ['spec.md', 'build.md', 'decision.md']
+  const order = ['report/report.md', 'spec.md', 'build.md', 'decision.md']
   if (order.includes(path)) return [0, order.indexOf(path), path]
   const round = path.match(/^round-(\d+)\/review-(\w+)\.md$/)
   if (round) return [2, Number(round[1]) * 10 + REVIEWERS.findIndex(([k]) => k === round[2]), path]
@@ -437,9 +437,9 @@ function sortFiles(files) {
 }
 
 function tone(first) {
-  if (/^(VERDICT:\s*PASS|APPROVE|STATUS:\s*READY)$/.test(first)) return 'good'
-  if (/^VERDICT:\s*CHANGES$/.test(first)) return 'warn'
-  if (/^(ESCALATE|STATUS:\s*BLOCKED)$/.test(first)) return 'stop'
+  if (/^(VERDICT:\s*PASS|APPROVE|STATUS:\s*READY|TRIAGE:\s*CONFIRMED)$/.test(first)) return 'good'
+  if (/^(VERDICT:\s*CHANGES|REPORT:\s*REGRESSION\b.*)$/.test(first)) return 'warn'
+  if (/^(ESCALATE|STATUS:\s*BLOCKED|TRIAGE:\s*(CANNOT-REPRODUCE|NOT-A-BUG))$/.test(first)) return 'stop'
   return null
 }
 

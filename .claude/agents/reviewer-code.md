@@ -33,6 +33,21 @@ Run the validation commands AGENTS.md lists (tests, build, lint, type-check)
 for the areas the branch touches. Lint only the changed files, and never use a
 mode that rewrites files, such as `--fix`.
 
+## Bug jobs
+
+When `spec.md` starts with `TRIAGE: CONFIRMED`, also check that:
+
+- The regression test fails without the fix. Find the test-only commit from
+  build.md, make a throwaway worktree of it
+  (`git worktree add --detach <worktree>-red <commit>`), run the repo's setup
+  and only that test, then `git worktree remove --force <worktree>-red`. Never
+  check out another commit in the job's worktree: other reviewers are using it.
+  If setup is too heavy to repeat, rely on the failing output in build.md and
+  say so under Checks.
+- The test asserts the behaviour from the spec's Bug section, not just that
+  nothing throws.
+- The fix addresses the Root cause, and doesn't hide the error from telemetry.
+
 ## What to look for
 
 - **Correctness**: it does what the spec's requirements say. Look for edge

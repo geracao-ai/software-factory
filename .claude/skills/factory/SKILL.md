@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Run the software factory. Use when the user types /factory <feature>, /factory next, /factory approve <job-id>, or /factory rework <job-id> <note>. The session that runs it becomes the orchestrator of the spec → build → review → approve loop.
+description: Run the software factory. Use when the user types /factory <feature>, /factory bug <source|report-id>, /factory report <source>, /factory next, /factory approve <job-id>, or /factory rework <job-id> <note>. The session that runs it becomes the orchestrator of the spec → build → review → approve loop, for features and for production bugs.
 ---
 
 # Factory
@@ -13,16 +13,28 @@ move the job along and keep `job.json` current.
 ## The loop
 
 ```
-feature → spec-writer → builder → [security, ux, ui, code] → WAIT FOR ALL
-                           ▲                                      │
-                           └──── any CHANGES: resume builder ◄────┤
-                                                                  ▼ all PASS
-                                     merge to main ◄─ APPROVE ─ approver ─ ESCALATE → needs-human
+error source → bug-reporter → factory/inbox/<report-id>/
+                                       │
+                                       ▼
+                  bug report → bug-triager ── CANNOT-REPRODUCE / NOT-A-BUG → needs-human
+                                       │ CONFIRMED
+                                       ▼
+feature ─────────► spec-writer ──► builder → [security, ux, ui, code] → WAIT FOR ALL
+                                     ▲                                      │
+                                     └──── any CHANGES: resume builder ◄────┤
+                                                                            ▼ all PASS
+                                               merge to main ◄─ APPROVE ─ approver ─ ESCALATE → needs-human
 ```
+
+A feature job starts at `spec-writer`. A bug job starts from a report in
+`factory/inbox/` and replaces `spec-writer` with `bug-triager`; from the build
+on, both kinds run the same loop. `factory/telemetry.md` defines bug reports.
 
 | Step         | Agent (`subagent_type`) | Writes                                      |
 | ------------ | ----------------------- | ------------------------------------------- |
-| spec         | `spec-writer`           | `spec.md`                                   |
+| report       | `bug-reporter`          | `factory/inbox/<report-id>/` (bugs only)    |
+| spec         | `spec-writer`           | `spec.md` (features)                        |
+|              | `bug-triager`           | `spec.md` starting with `TRIAGE:` (bugs)    |
 | build        | `builder`               | `build.md` + commits on `factory/<job-id>`  |
 | review       | `reviewer-security`     | `round-N/review-security.md`                |
 |              | `reviewer-ux`           | `round-N/review-ux.md`                      |
@@ -56,11 +68,17 @@ started or was handed.
 ## Files
 
 `<repo>` is the main checkout (`git rev-parse --show-toplevel` from your
-session) and `<name>` is its folder name. `factory/jobs/` is gitignored runtime
-state that never lands in a commit.
+session) and `<name>` is its folder name. `factory/jobs/` and `factory/inbox/`
+are gitignored runtime state that never lands in a commit. Bug reports hold
+production data even after scrubbing: never copy them into a worktree or a
+commit.
 
 ```
 <repo>/factory/backlog.md                      queue for /factory next
+<repo>/factory/telemetry.md                    tracker contract, bug report format, severity and scrubbing rules
+<repo>/factory/trackers/<tracker>.md           how to talk to one error tracker (sentry, datadog, ...)
+<repo>/factory/inbox/<report-id>/report.md     an open bug report, plus its scrubbed attachments
+<repo>/factory/jobs/<job-id>/report/           a bug job's report, moved here from the inbox
 <repo>/factory/jobs/<job-id>/job.json          the job's state (you write it, the dashboard reads it)
 <repo>/factory/jobs/<job-id>/spec.md
 <repo>/factory/jobs/<job-id>/build.md
@@ -87,6 +105,20 @@ state that never lands in a commit.
   `CHANGES`. Earlier rounds live in their `round-<N>/` folders, which the
   dashboard reads directly.
 - Rewrite the whole file on every change. `worktree` is always an absolute path.
+- Bug jobs add `"kind": "bug"`, plus `fingerprint`, `severity` and `report`
+  (the report id) from the report, `regression_of` (a job id) when the report
+  says `REGRESSION`, and `fixed_in` (the merge commit) once merged. Their
+  `feature` is `Bug: <report title>`. A job without `kind` is a feature. Triage
+  counts as `spec`.
+
+```json
+{ "id": "005-checkout-null-cart", "kind": "bug", "feature": "Bug: TypeError: cart.items is undefined",
+  "report": "20261018-a1b2c3d4", "fingerprint": "a1b2c3d4", "severity": "high",
+  "branch": "factory/005-checkout-null-cart",
+  "worktree": "/Users/you/code/my-app-factory/005-checkout-null-cart",
+  "stage": "spec", "round": 0,
+  "reviews": { "security": "pending", "ux": "pending", "ui": "pending", "code": "pending" } }
+```
 
 ### Prompts
 
@@ -96,7 +128,8 @@ Below, `<paths>` stands for that sentence.
 
 Agents that open pages also get a port. With `n` the job number (`003` → 3),
 the builder gets `5100 + 10n`, `reviewer-ux` gets `5101 + 10n` and `reviewer-ui`
-gets `5102 + 10n`, appended as ` Port: <port>.`
+gets `5102 + 10n`, appended as ` Port: <port>.` `bug-triager` finishes before
+the builder starts, so it uses the builder's port.
 
 ## /factory <feature>
 
@@ -115,6 +148,7 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
    Then, in the worktree, run the setup AGENTS.md gives for a fresh checkout
    (installing dependencies, for example). If any of it fails, stop and tell
    the user.
+   (Bug jobs run steps 1 and 2 too; see **/factory bug**.)
 3. **Spec.** Spawn `spec-writer` with the prompt
    `<paths> Feature: <feature, verbatim>`.
    Wait for it to finish, then check that `spec.md` exists.
@@ -177,7 +211,8 @@ git worktree remove <worktree>
 git branch -d factory/<job-id>
 ```
 
-Set `stage: "merged"`. If the merge fails, run `git merge --abort` (when a merge
+Set `stage: "merged"` (for a bug job, also `fixed_in`: the output of
+`git rev-parse HEAD` right after the merge). If the merge fails, run `git merge --abort` (when a merge
 is in progress), set `stage: "needs-human"` and tell the user why. If removing the
 worktree fails, the job is still merged: tell the user what `git worktree remove`
 printed. Never push.
@@ -188,12 +223,75 @@ Set `stage: "needs-human"`. The branch and its worktree stay for the human to
 inspect. Tell the user which job is waiting, give the worktree path, and quote
 `decision.md` (or the BLOCKED reason from `build.md`).
 
+## /factory report <source>
+
+Opens bugs without building them. `<source>` is an issue or event URL or id
+from the project's error tracker, `new` (every new or regressed production
+issue since the last poll), a path to files (event JSON, HAR, logs,
+screenshots), or a description, verbatim. Which tracker, and how to reach it,
+comes from the `## Error tracking` section of `AGENTS.md` and
+`factory/trackers/<tracker>.md`; see `factory/telemetry.md`.
+
+Spawn `bug-reporter` with the prompt
+`Inbox: <repo>/factory/inbox/. Source: <source>`. Its reply ends with one
+report folder per line. For each, read the first line of its `report.md`:
+
+- `REPORT: NEW` or `REPORT: REGRESSION <job-id>`: tell the user the report id,
+  title and severity, and that `/factory bug <report-id>` or `/factory next`
+  will fix it. For a regression, name the job whose fix didn't hold.
+- `REPORT: DUPLICATE <id>`: move the folder to
+  `factory/inbox/.duplicates/<report-id>/` and tell the user which report or job
+  it duplicates. Duplicates are never built.
+
+If the reporter wrote no `report.md`, or its first line is none of these, stop
+and tell the user what it said.
+
+## /factory bug <source|report-id>
+
+1. **Report.** If the argument is the name of a folder in `factory/inbox/`,
+   that is the report. Otherwise run **/factory report** with it first and
+   continue only on `NEW` or `REGRESSION`.
+2. **Create the job** as in **/factory <feature>** step 1, with the slug taken
+   from the report title and the bug fields in `job.json`. Then claim the
+   report: `mv factory/inbox/<report-id> factory/jobs/<job-id>/report`. A
+   rename is atomic, so if it fails because the folder is gone, another session
+   took the bug: remove the job folder you just created and stop.
+3. **Worktree**, exactly as step 2 of **/factory <feature>**.
+4. **Triage.** Spawn `bug-triager` with the prompt `<paths> Port: <port>.` using
+   the builder's port. When it finishes, read the first line of `spec.md`:
+   - `TRIAGE: CONFIRMED`: continue with **/factory <feature>** step 4
+     (**Build**). From there on a bug job runs like any other job.
+   - `TRIAGE: CANNOT-REPRODUCE` or `TRIAGE: NOT-A-BUG`: write `decision.md`
+     yourself, reading `ESCALATE`, a blank line, then
+     `Triage: <verdict>. See spec.md.`, and go to **Needs human**. The human
+     can `/factory rework` it with more context, or close it in the tracker.
+
+When a bug job merges, tell the user the fix ships with their next deploy.
+Then look at `On merge` in the `## Error tracking` section of `AGENTS.md` and
+at the `tracker` row of the report:
+
+- `comment` or `resolve`, and the report came from the tracker: run the
+  adapter's `comment` with `Fixed by <job-id>, merged as <fixed_in>.`, and for
+  `resolve` also its `resolve`, which marks the issue resolved in the next
+  release so a recurrence comes back through `/factory report` as a
+  `REGRESSION`. If the adapter doesn't support an operation or a call fails,
+  say so; the job stays merged.
+- Otherwise (`nothing`, unset, or no tracker): tell the user to resolve the
+  issue in their tracker for the next release themselves.
+
 ## /factory next
 
-Read `factory/backlog.md` and take the first `- [ ]` item. Claim it with one
-Edit that replaces its exact line with `- [x] <item> → claimed`. If the Edit
-fails because the line changed, another session claimed it: re-read the backlog
-and try the next `- [ ]` item. If none is left, say so and stop.
+Bugs come first. List `factory/inbox/*/report.md` (not `.duplicates/`) and take
+the report with the highest severity (`critical`, `high`, `medium`, `low`),
+oldest report id first on a tie. If there is one, run **/factory bug** with its
+report id; if the `mv` in step 2 fails, another session took it, so take the
+next one.
+
+With no reports left, read `factory/backlog.md` and take the first `- [ ]` item.
+Claim it with one Edit that replaces its exact line with
+`- [x] <item> → claimed`. If the Edit fails because the line changed, another
+session claimed it: re-read the backlog and try the next `- [ ]` item. If none
+is left, say so and stop.
 
 Run `/factory <item>`, and once step 1 has given it a job id, replace `claimed`
 on its backlog line with the job id.
@@ -217,5 +315,6 @@ The job must be in `needs-human`.
 ## Reporting
 
 Keep the user posted with one short line per transition, for example
-`003-rate-limiting: round 2, security CHANGES, ux/ui/code PASS → resuming builder`.
+`003-rate-limiting: round 2, security CHANGES, ux/ui/code PASS → resuming builder`
+or `005-checkout-null-cart: high bug, TRIAGE CONFIRMED → building`.
 When the job ends, say whether it merged or needs a human, and why.

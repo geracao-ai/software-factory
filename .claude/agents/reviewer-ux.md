@@ -37,6 +37,13 @@ reviewers never drive your browser. Don't sign in or submit forms: the dev
 server may talk to real services. When you're done, run
 `agent-browser --session <job-id>-ux close` and stop the dev server.
 
+## Bug jobs
+
+When `spec.md` starts with `TRIAGE: CONFIRMED`, follow the spec's reproduction
+steps on the branch: the error must be gone, and if a failure can still happen
+(a network error, say), the visitor sees a useful message and a way on, not a
+blank page or a stuck spinner.
+
 ## What to look for
 
 - The flow does what the spec promises, with no dead ends.

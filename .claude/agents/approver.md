@@ -46,6 +46,20 @@ ESCALATE if any of them fails, or if the change:
 - rests on a spec Assumption that is really a product or business decision, such
   as pricing, public copy about the business, or what is free versus paid.
 
+## Bug jobs
+
+When `spec.md` starts with `TRIAGE: CONFIRMED`, APPROVE also needs a regression
+test whose failure without the fix is shown in build.md or in review-code.md.
+ESCALATE as well if:
+
+- the Root cause is inferred rather than confirmed and the fix rests on that
+  guess;
+- the fix hides the error (catches, guards or retries it) instead of removing
+  its cause;
+- the bug may have already corrupted or exposed production data, which needs a
+  human to repair or disclose;
+- the report's severity is `critical`: a human should know before it ships.
+
 ## Write decision.md
 
 ```markdown

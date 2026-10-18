@@ -1,16 +1,21 @@
 # Software Factory for Claude Code
 
-A small, visual software factory built from one Claude Code skill, seven
+A small, visual software factory built from one Claude Code skill, nine
 subagents and plain markdown files. You type `/factory <feature>` and agents
 write a spec, build it on its own branch, review it from four angles, and either
-merge it to `main` or hand it to you.
+merge it to `main` or hand it to you. Production errors take the same path:
+`/factory report <source>` turns an error, a HAR or a tracker issue into a bug
+report, and `/factory bug` reproduces it, fixes it with a regression test, and
+runs it through the same loop.
 
 ```
-feature → spec-writer → builder → [security, ux, ui, code] → WAIT FOR ALL
-                           ▲                                      │
-                           └──── any CHANGES: resume builder ◄────┤
-                                                                  ▼ all PASS
-                                     merge to main ◄─ APPROVE ─ approver ─ ESCALATE → needs-human
+error source → bug-reporter → factory/inbox/ → bug-triager ─┐ CONFIRMED
+                                                            ▼
+feature ─────────────────────────────────────► spec-writer → builder → [security, ux, ui, code] → WAIT FOR ALL
+                                                               ▲                                      │
+                                                               └──── any CHANGES: resume builder ◄────┤
+                                                                                                      ▼ all PASS
+                                                         merge to main ◄─ APPROVE ─ approver ─ ESCALATE → needs-human
 ```
 
 This folder is laid out like a repo root, so you can copy it straight into
@@ -20,6 +25,8 @@ yours.
 .claude/
   skills/factory/SKILL.md        the orchestrator: runs the loop, writes job.json
   agents/                        one file per agent in the loop
+    bug-reporter.md              sonnet  scrubs and groups an error into factory/inbox/<report-id>/
+    bug-triager.md               opus    reproduces a bug, writes spec.md with a TRIAGE verdict
     spec-writer.md               opus    writes spec.md
     builder.md                   opus    commits on factory/<job-id>, writes build.md
     reviewer-security.md         opus    writes round-N/review-security.md
@@ -29,6 +36,9 @@ yours.
     approver.md                  opus    writes decision.md
 factory/
   backlog.md                     queue for /factory next
+  telemetry.md                   tracker contract, what the app should capture, bug report format
+  trackers/                      one adapter per error tracker: sentry, datadog, bugsnag, rollbar, custom
+  inbox/                         open bug reports, one folder each (runtime state)
   dashboard.html                 the visual board
   jobs/                          one folder per job (two examples included)
 BUILD_PROMPT.md                  the prompt that built the original factory
@@ -51,20 +61,66 @@ BUILD_PROMPT.md                  the prompt that built the original factory
 
 ```
 /factory <feature>               run a new job through the loop
-/factory next                    run the first unchecked item in factory/backlog.md
+/factory report <source>         open bug reports from a tracker issue, `new` (poll), files (event, HAR, logs) or a description
+/factory bug <source|report-id>  reproduce and fix a bug through the loop
+/factory next                    fix the most severe open bug, or else run the first unchecked backlog item
 /factory approve <job-id>        merge a needs-human job into main
 /factory rework <job-id> <note>  send a needs-human job back to the builder with feedback
 ```
+
+## Production bugs
+
+`factory/telemetry.md` is the contract between your app and the factory: what
+the factory needs from an error tracker, what the app should capture when it
+fails (release SHA, symbolicated stack, breadcrumbs, trace id, grouping, PII
+scrubbing at the source), the report format, severity levels and HAR scrubbing
+rules.
+
+The factory isn't tied to one vendor. Each project names its tracker in an
+`## Error tracking` section of `AGENTS.md`, and `factory/trackers/<name>.md`
+says how to reach it. Adapters ship for `sentry` (and GlitchTip), `datadog`,
+`bugsnag`, `rollbar` and `custom` (your own endpoint or log store); add a file
+for any other. Without a tracker, `/factory report` still takes HARs, event
+files and descriptions.
+
+```markdown
+## Error tracking
+- Tracker: sentry
+- Base URL: https://sentry.io
+- Project: acme/web-app
+- Auth: $SENTRY_AUTH_TOKEN
+- Production environment: production
+- Release: git SHA
+- On merge: resolve        # nothing (default) | comment | resolve
+```
+
+- **`bug-reporter`** reads the source as untrusted data, scrubs tokens, cookies
+  and PII, fingerprints the error, and writes `factory/inbox/<report-id>/`. A
+  report that matches an open job is a `DUPLICATE`; one that matches a merged
+  job is a `REGRESSION`.
+- **`bug-triager`** reproduces the bug in the job's worktree (a throwaway test,
+  the dev server, or the traced code path), finds the root cause and writes
+  `spec.md`. Its first acceptance criterion is always a regression test that
+  fails on `main` and passes on the branch. If it can't reproduce the bug, the
+  job goes to a human with the extra telemetry that would help next time.
+- From there the builder writes the failing test first, fixes the cause in a
+  separate commit, and the reviewers and approver check the red → green
+  evidence.
+
+Wire your tracker's *new issue* and *regression* alerts to a session that runs
+`/factory report <issue-url>`, or schedule `/factory report new` to poll, and
+run `/factory next` to work through the inbox.
 
 ## Use it in your repo
 
 1. Copy `.claude/` and `factory/` into your repo root.
 2. Delete the example jobs in `factory/jobs/` and the checked items in
    `factory/backlog.md`.
-3. Add `/factory/jobs/` to your `.gitignore`. Job folders are runtime state.
+3. Add `/factory/jobs/` and `/factory/inbox/` to your `.gitignore`. Job
+   folders and bug reports are runtime state, and reports hold production data.
 4. Make sure your `AGENTS.md` (or `CLAUDE.md`) says how to set up a fresh
    checkout, start the dev server on a given port, and run your tests, build
-   and lint. The agents carry nothing repo-specific; they read all of it from
+   and lint, plus an `## Error tracking` section if you want production bugs. The agents carry nothing repo-specific; they read all of it from
    there.
 5. Install the [`agent-browser`](https://github.com/vercel-labs/agent-browser)
    CLI if your project has pages to look at. The builder and the UX and UI
