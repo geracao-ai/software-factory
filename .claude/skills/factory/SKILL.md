@@ -49,6 +49,26 @@ agent files in `.claude/agents/`.
 Every agent reads `AGENTS.md` (or `CLAUDE.md`) for the repo's setup, dev server,
 validation commands and conventions. Nothing repo-specific lives in these files.
 
+## Usage
+
+Every job keeps a running account of what it cost: tokens by type and model,
+cost by model, effort, peak context, wall and active time, tool calls, edit
+decisions, lines and commits. `factory/usage.md` explains it.
+
+- A `SubagentStop` hook in `.claude/settings.json` runs
+  `factory/bin/usage.py hook` after every agent, which appends that agent's
+  usage, and your own since the last agent, to the job's `usage.jsonl`. You
+  don't do anything for it.
+- You take three snapshots with
+  `python3 factory/bin/usage.py checkpoint <job-id> <name>`:
+  `pr-opened` when the first build is READY (the point a PR would open),
+  `reviewed` when the approver finishes, and `closed` when the job merges or
+  goes to a human. Each writes `usage.json` and `usage.md` in the job folder;
+  `closed` also updates the project ledger, `factory/ledger.jsonl` and
+  `factory/LEDGER.md`.
+- If a checkpoint command fails, tell the user what it printed and carry on: usage
+  never blocks a job.
+
 ## Parallel jobs
 
 Every job runs in its own git worktree on its own branch, so several jobs can run
@@ -85,6 +105,11 @@ commit.
 <repo>/factory/jobs/<job-id>/rework-<k>.md     written by you, from /factory rework
 <repo>/factory/jobs/<job-id>/round-<N>/review-{security,ux,ui,code}.md
 <repo>/factory/jobs/<job-id>/decision.md
+<repo>/factory/jobs/<job-id>/usage.jsonl       one line per agent run, written by the usage hook
+<repo>/factory/jobs/<job-id>/usage.{json,md}   the job's totals and checkpoints, from checkpoint
+<repo>/factory/ledger.jsonl                    one line per closed job; committed
+<repo>/factory/LEDGER.md                       the ledger as tables; committed
+<repo>/factory/pricing.json                    USD per million tokens, per model
 <repo>/../<name>-factory/<job-id>/             the job's worktree, on factory/<job-id>
 ```
 
@@ -94,7 +119,7 @@ commit.
 { "id": "003-rate-limiting", "feature": "Rate limit the signup form",
   "branch": "factory/003-rate-limiting",
   "worktree": "/Users/you/code/my-app-factory/003-rate-limiting",
-  "stage": "review", "round": 2,
+  "stage": "review", "round": 2, "startedAt": "2026-10-28T14:02:11Z",
   "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "pending", "code": "PASS" } }
 ```
 
@@ -105,6 +130,10 @@ commit.
   `CHANGES`. Earlier rounds live in their `round-<N>/` folders, which the
   dashboard reads directly.
 - Rewrite the whole file on every change. `worktree` is always an absolute path.
+- `startedAt` is set when the job is created, `endedAt` when it merges or goes
+  to a human, and `resumedAt` when `/factory rework` or `/factory approve`
+  picks it up again (which also clears `endedAt`). All are UTC ISO times
+  (`date -u +%Y-%m-%dT%H:%M:%SZ`).
 - Bug jobs add `"kind": "bug"`, plus `fingerprint`, `severity` and `report`
   (the report id) from the report, `regression_of` (a job id) when the report
   says `REGRESSION`, and `fixed_in` (the merge commit) once merged. Their
@@ -140,7 +169,7 @@ the builder starts, so it uses the builder's port.
    another session took the number, pick the next number and try again.
    The worktree path is `$(cd .. && pwd)/$(basename "$PWD")-factory/<job-id>`,
    run from `<repo>`. Write `job.json` with that `worktree`, `stage: "spec"`,
-   `round: 0` and all reviews `pending`.
+   `round: 0`, `startedAt` and all reviews `pending`.
 2. **Worktree.** Create the branch and its worktree from `main`:
    ```bash
    git worktree add -b factory/<job-id> <worktree> main
@@ -160,7 +189,8 @@ the builder starts, so it uses the builder's port.
 
 Read the first line of `build.md`.
 
-- `STATUS: READY`: start the next review round.
+- `STATUS: READY`: if this is the job's first READY (`round` is 0), run
+  `checkpoint <job-id> pr-opened`. Then start the next review round.
 - `STATUS: BLOCKED`: go to **Needs human**.
 
 ### Review round N
@@ -190,7 +220,8 @@ Read the first line of `build.md`.
 ### Approve
 
 Set `stage: "approve"`. Spawn `approver` with the prompt `<paths> Final round: N.`
-When it finishes, read the first line of `decision.md`:
+When it finishes, run `checkpoint <job-id> reviewed` (the branch still exists,
+so it records lines and commits), then read the first line of `decision.md`:
 
 - `APPROVE`: go to **Merge**.
 - `ESCALATE`: go to **Needs human**.
@@ -198,10 +229,10 @@ When it finishes, read the first line of `decision.md`:
 ### Merge
 
 The merge happens in the main checkout, so it must be clean and on `main`:
-`git status --porcelain -- . ':!factory/backlog.md'` prints nothing and
-`git branch --show-current` prints `main`. `factory/backlog.md` is exempt: every
-`/factory next` edits it, and job branches never touch it, so a dirty backlog
-cannot conflict with the merge. If not, set `stage: "needs-human"` and tell the
+`git status --porcelain -- . ':!factory/backlog.md' ':!factory/ledger.jsonl' ':!factory/LEDGER.md'`
+prints nothing and `git branch --show-current` prints `main`. Those three files
+are exempt: `/factory next` and closing jobs edit them, and job branches never
+touch them, so they cannot conflict with the merge. If not, go to **Needs human** and tell the
 user the job is approved but the main checkout is busy; they run
 `/factory approve <job-id>` once it is clean. Otherwise:
 
@@ -211,15 +242,32 @@ git worktree remove <worktree>
 git branch -d factory/<job-id>
 ```
 
-Set `stage: "merged"` (for a bug job, also `fixed_in`: the output of
-`git rev-parse HEAD` right after the merge). If the merge fails, run `git merge --abort` (when a merge
-is in progress), set `stage: "needs-human"` and tell the user why. If removing the
-worktree fails, the job is still merged: tell the user what `git worktree remove`
-printed. Never push.
+If the merge fails, run `git merge --abort` (when a merge is in progress), go
+to **Needs human** and tell the user why. If removing the worktree fails, the
+job is still merged: tell the user what `git worktree remove` printed. Never
+push.
+
+Set `stage: "merged"` and `endedAt` (for a bug job, also `fixed_in`: the
+output of `git rev-parse HEAD` right after the merge). Then record the usage
+and commit the ledger, which also carries any jobs closed as needs-human since
+the last merge:
+
+```bash
+python3 factory/bin/usage.py checkpoint <job-id> closed
+python3 factory/bin/usage.py ledger --readme
+git add factory/ledger.jsonl factory/LEDGER.md README.md
+git commit -m "Record factory usage for <job-id>"
+```
+
+`ledger --readme` rewrites the block between `<!-- factory-ledger:start -->`
+and `<!-- factory-ledger:end -->` in `README.md`, if it has one; drop
+`README.md` from `git add` when the repo has none.
 
 ### Needs human
 
-Set `stage: "needs-human"`. The branch and its worktree stay for the human to
+Set `stage: "needs-human"` and `endedAt`, then run
+`checkpoint <job-id> closed`. Don't commit: the ledger goes into the next
+merge's usage commit. The branch and its worktree stay for the human to
 inspect. Tell the user which job is waiting, give the worktree path, and quote
 `decision.md` (or the BLOCKED reason from `build.md`).
 
@@ -298,7 +346,8 @@ on its backlog line with the job id.
 
 ## /factory approve <job-id>
 
-The job must be in `needs-human`. Run **Merge** with that job id.
+The job must be in `needs-human`. Set `resumedAt` and clear `endedAt`, then
+run **Merge** with that job id.
 
 ## /factory rework <job-id> <note>
 
@@ -306,7 +355,7 @@ The job must be in `needs-human`.
 
 1. Write the note, verbatim, to `factory/jobs/<job-id>/rework-<k>.md`, where `k`
    is the next unused number.
-2. Set `stage: "build"`.
+2. Set `stage: "build"` and `resumedAt`, and clear `endedAt`.
 3. Spawn a fresh `builder` named `builder-<job-id>` with the prompt
    `<paths> Rework: read rework-<k>.md and address it, then update build.md for round N+1. Port: <port>.`
    (`N` is the job's last round.) A rework run gets a fresh `MAX_RESUMES`.
@@ -317,4 +366,6 @@ The job must be in `needs-human`.
 Keep the user posted with one short line per transition, for example
 `003-rate-limiting: round 2, security CHANGES, ux/ui/code PASS → resuming builder`
 or `005-checkout-null-cart: high bug, TRIAGE CONFIRMED → building`.
-When the job ends, say whether it merged or needs a human, and why.
+When the job ends, say whether it merged or needs a human, and why, with the
+cost line from the `closed` checkpoint, for example
+`003-rate-limiting: closed $4.12 (until review $1.80, review $2.20), 1.9M tokens`.

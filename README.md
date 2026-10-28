@@ -23,6 +23,7 @@ yours.
 
 ```
 .claude/
+  settings.json                  the SubagentStop hook that records each agent's usage
   skills/factory/SKILL.md        the orchestrator: runs the loop, writes job.json
   agents/                        one file per agent in the loop
     bug-reporter.md              sonnet  scrubs and groups an error into factory/inbox/<report-id>/
@@ -39,6 +40,10 @@ factory/
   telemetry.md                   tracker contract, what the app should capture, bug report format
   trackers/                      one adapter per error tracker: sentry, datadog, bugsnag, rollbar, custom
   inbox/                         open bug reports, one folder each (runtime state)
+  usage.md                       how cost and usage are recorded, and OpenTelemetry
+  pricing.json                   USD per million tokens, per model
+  bin/usage.py                   the usage collector (hook, checkpoints, ledger)
+  ledger.jsonl, LEDGER.md        one line per closed job, and the same as tables (committed)
   dashboard.html                 the visual board
   jobs/                          one folder per job (two examples included)
 BUILD_PROMPT.md                  the prompt that built the original factory
@@ -111,11 +116,35 @@ Wire your tracker's *new issue* and *regression* alerts to a session that runs
 `/factory report <issue-url>`, or schedule `/factory report new` to poll, and
 run `/factory next` to work through the inbox.
 
+## Usage and cost
+
+Every job keeps a running account of what it cost, from the moment it is
+created until it merges or goes to a human: tokens by type (input, output,
+cache read, cache write) and model, cost by model, effort, peak context, wall
+and active time, lines and commits, tool calls, and edits accepted or rejected.
+Each agent run is one line, so you see what the builder cost compared with the
+reviewers.
+
+A `SubagentStop` hook records every agent from Claude Code's transcripts, with
+no setup. The orchestrator takes three snapshots: **pr-opened** (first build
+ready), **reviewed** (after the approver) and **closed** (merged or handed to
+you). Closed jobs add up in `factory/ledger.jsonl` and `factory/LEDGER.md`,
+and in the block below, which every merge updates. Costs are estimates from
+`factory/pricing.json`; for exact, fleet-wide numbers, turn on Claude Code's
+OpenTelemetry export. `factory/usage.md` explains both.
+
+<!-- factory-ledger:start -->
+No jobs closed yet.
+<!-- factory-ledger:end -->
+
 ## Use it in your repo
 
 1. Copy `.claude/` and `factory/` into your repo root.
-2. Delete the example jobs in `factory/jobs/` and the checked items in
-   `factory/backlog.md`.
+2. Delete the example jobs in `factory/jobs/`, the checked items in
+   `factory/backlog.md`, and `factory/ledger.jsonl` and `factory/LEDGER.md` if
+   they have entries. To get the totals in your README, add the two
+   `factory-ledger` comment lines above to it. Check `factory/pricing.json`
+   against what you pay.
 3. Add `/factory/jobs/` and `/factory/inbox/` to your `.gitignore`. Job
    folders and bug reports are runtime state, and reports hold production data.
 4. Make sure your `AGENTS.md` (or `CLAUDE.md`) says how to set up a fresh
@@ -138,8 +167,9 @@ cd factory && python3 -m http.server
 ```
 
 Open <http://localhost:8000/dashboard.html>. Jobs move across the stages as
-cards, review chips fill in as verdicts land, and jobs that need you stand out.
-Click a card to read its markdown files. It polls every two seconds, so leave it
+cards, review chips fill in as verdicts land, each card shows its cost so far,
+and jobs that need you stand out. Click a card to read its markdown files,
+`usage.md` included. It polls every two seconds, so leave it
 open while jobs run.
 
 ## The example jobs

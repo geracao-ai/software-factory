@@ -91,6 +91,7 @@
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .card-top .num { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-top .cost { margin-left: auto; flex: none; }
   .pulse {
     width: 7px; height: 7px; border-radius: 50%; background: var(--active);
     animation: pulse 1.6s ease-in-out infinite;
@@ -349,6 +350,7 @@ function card(job, past) {
         ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
         <span class="num">${esc(num)} · ${esc(slug.join('-'))}</span>
         ${human ? '<span class="flag">your call</span>' : ''}
+        ${job.cost != null ? `<span class="num cost" title="estimated cost so far">$${job.cost.toFixed(2)}</span>` : ''}
       </div>
       <p class="feature">${esc(job.feature)}</p>
       <div class="branch">${esc(job.branch)}</div>
@@ -404,7 +406,12 @@ async function loadJobs() {
     .filter((h) => h.endsWith('/'))
     .map((h) => h.slice(0, -1))
     .sort()
-  return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
+  return Promise.all(ids.map(async (id) => {
+    const job = JSON.parse(await fetchText(`jobs/${id}/job.json`))
+    // usage.json appears at the first checkpoint; until then there is no cost to show.
+    job.cost = await fetchText(`jobs/${id}/usage.json`).then((t) => JSON.parse(t).totals.cost_usd, () => null)
+    return job
+  }))
 }
 
 // ---- Drawer --------------------------------------------------------------
@@ -422,7 +429,7 @@ async function listFiles(dir) {
 }
 
 function fileRank(path) {
-  const order = ['report/report.md', 'spec.md', 'build.md', 'decision.md']
+  const order = ['report/report.md', 'spec.md', 'build.md', 'decision.md', 'usage.md']
   if (order.includes(path)) return [0, order.indexOf(path), path]
   const round = path.match(/^round-(\d+)\/review-(\w+)\.md$/)
   if (round) return [2, Number(round[1]) * 10 + REVIEWERS.findIndex(([k]) => k === round[2]), path]

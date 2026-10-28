@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/factory/bin/usage.py\" hook",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
